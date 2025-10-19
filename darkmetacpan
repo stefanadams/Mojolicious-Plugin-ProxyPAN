@@ -1,0 +1,8 @@
+#!/usr/bin/env perl
+use Mojolicious::Lite -signatures;
+
+use lib 'lib';
+
+plugin 'DarkPAN';
+
+app->start;

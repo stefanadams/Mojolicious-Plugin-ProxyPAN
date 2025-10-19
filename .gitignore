@@ -1,0 +1,7 @@
+/authors
+/modules
+/perlbrew
+/tmp
+*.db*
+*.conf
+modulelist
