@@ -8,23 +8,25 @@ use Mojo::File qw(path);
 use Mojo::SQLite;
 use Mojo::URL;
 
-has cpan_url => sub { $ENV{CPAN_URL} || 'http://www.cpan.org' };
-has darkpan_paths => sub { [split /:/, $ENV{DARKPAN_PATH} || 'authors/id'] };
-has metadb_url => sub { $ENV{METADB_URL} || 'http://cpanmetadb.plackperl.org' };
-has sqlite_db => sub { $ENV{SQLITE_DB} };
+has darkpan_paths => 'authors/id';
 
 sub register ($self, $app, $config) {
-  $app->helper('cpan_url' => sub { Mojo::URL->new($config->{cpan_url} || $self->cpan_url) });
-  $app->helper('metadb_url' => sub { Mojo::URL->new($config->{metadb_url} || $self->metadb_url) });
-  $app->helper('current_path' => \&_current_path);
-  $app->helper('darkpan.paths' => sub { _darkpan_paths(shift, $config->{darkpan_paths} || $self->darkpan_paths) });
-  $app->helper('darkpan.packages' => \&_darkpan_packages);
+  $app->helper('basic_authz'          => \&_basic_authz);
+  $app->helper('current_path'         => \&_current_path);
+  $app->helper('darkpan.packages'     => \&_darkpan_packages);
+  $app->helper('darkpan.paths'        => sub { _darkpan_paths(shift, [split /:/, $ENV{DARKPAN_PATH} || $config->{darkpan_paths} || $self->darkpan_paths]) });
   $app->helper('darkpan.save_package' => \&_darkpan_save_package);
-  $app->helper('proxied' => \&_proxied);
-  $app->helper('reply.empty' => \&_reply_empty);
-  $app->helper('reply.history' => \&_reply_history);
-  $app->helper('reply.packages' => \&_reply_packages);
-  $app->helper('sql' => sub { _sql(shift, $config->{sqlite_db} || $self->sqlite_db) });
+  $app->helper('proxied'              => \&_proxied);
+  $app->helper('reply.empty'          => \&_reply_empty);
+  $app->helper('reply.history'        => \&_reply_history);
+  $app->helper('reply.packages'       => \&_reply_packages);
+  $app->helper('sql'                  => sub { _sql(shift, $ENV{SQLITE_DB} || $config->{sqlite_db}) });
+}
+
+sub _basic_authz ($c) {
+  my $authz = $c->req->headers->authorization || '';
+  return undef unless $authz =~ /^Basic\s+(.*?)$/;
+  return Mojo::Util::b64_decode($1);
 }
 
 sub _current_path ($c) {
@@ -36,7 +38,7 @@ sub _darkpan_paths ($c, $darkpan_paths) {
 }
 
 sub _darkpan_packages ($c) {
-  $c->sql->db->query('SELECT module, version, filename FROM packages ORDER BY module')->hashes
+  $c->sql->db->select('packages', ['module', 'version', 'filename'], undef, {-desc => 'module'})->hashes
     ->map(sub { Mojo::DarkPAN::Distribution->new([$_->{module}, $_->{version}, $_->{filename}]) });
 }
 
@@ -45,7 +47,7 @@ sub _darkpan_save_package ($c, $tmpfile, $dist) {
   my $db = $c->sql->db;
   eval {
     my $tx = $db->begin;
-    $db->insert('packages', {module => $dist->module, version => $dist->version, filename => $dist->path});
+    $db->insert('packages', {module => $dist->module, version => $dist->version, filename => $dist->path}, {on_conflict => undef});
     $tx->commit;
   };
   $c->log->info(sprintf 'Saving uploaded distribution to %s', $tmpfile->move_to($move_to->tap(sub { $_->dirname->make_path }))) unless $@;

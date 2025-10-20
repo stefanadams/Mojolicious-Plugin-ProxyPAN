@@ -9,19 +9,47 @@ use Mojo::File qw(path tempdir tempfile);
 use Mojo::Message::Response;
 use Mojo::URL;
 
+has cpan_url   => 'http://www.cpan.org';
+has metadb_url => 'http://cpanmetadb.plackperl.org';
+has pause_url  => 'http://pause.perl.org';
+
 sub register ($self, $app, $config) {
+  $app->helper('cpan_url'   => sub { Mojo::URL->new($ENV{CPAN_URL} || $config->{cpan_url} || $self->cpan_url) });
+  $app->helper('metadb_url' => sub { Mojo::URL->new($ENV{METADB_URL} || $config->{metadb_url} || $self->metadb_url) });
+  $app->helper('pause_url'  => sub { Mojo::URL->new($ENV{PAUSE_URL}  || $config->{pause_url}  || $self->pause_url) });
+
   my $r = $app->routes;
-  my $cpan = $r->under('/')->requires(agent => qr/cpanminus/);
-  $cpan->get('/v1.0/history/:module' => \&_history)->name('history');
-  $cpan->get('/modules/02packages.details.txt.gz' => \&_packages)->name('packages');
-  $cpan->get('/authors/id/*filename' => \&_download)->name('download');
-  $cpan->put('*dummy/authors/id/*filename' => {dummy => ''} => \&_upload)->name('upload');
-  $cpan->any('/*all' => \&_all)->name('all');
+  $r->add_condition(darkpan => sub ($route, $c, $captures, $bool) {
+    my $darkpan = $c->req->headers->header('X-DarkPan') || 0;
+    # Winner
+    return 1 if $darkpan eq $bool;
+    # Loser
+    return undef;
+  });
+
+  my $mock = $r->under('/')->requires(agent => qr/^(?!cpanminus$)/, darkpan => 0);
+  $mock->post('/pause/authenquery' => \&_pause)->name('pause');
+  $mock->any('/*all' => \&_mock_all)->name('mock_all');
+
+  my $cpanm = $r->under('/')->requires(agent => qr/cpanminus/, darkpan => 0);
+  $cpanm->get('/v1.0/history/:module' => \&_history)->name('history');
+  $cpanm->get('/modules/02packages.details.txt.gz' => \&_packages)->name('packages');
+  $cpanm->get('/authors/id/*filename' => \&_download)->name('download');
+  # $cpanm->put('/authors/id/*filename' => \&_upload)->name('upload');
+  $cpanm->post('/pause/authenquery' => \&_upload)->name('upload');
+  $cpanm->any('/*all' => \&_all)->name('all');
+}
+
+sub _mock_all ($c) {
+  $c->log->trace(sprintf 'Mocking request: %s %s', $c->req->method, $c->req->url);
+  warn $c->req->url->to_unsafe_string;
+  $c->reply->empty(200);
 }
 
 sub _all ($c) {
   $c->log->trace(sprintf 'Proxying request: %s %s', $c->req->method, $c->req->url);
   my $tx = $c->ua->build_tx($c->req->method => $c->req->url->to_abs => $c->req->headers->to_hash => $c->req->body);
+  $tx->req->headers->header('X-DarkPan' => 1);
   $c->proxy->start_p($tx)->catch(sub ($err) {
     $c->reply->empty(400 => "Proxy could not connect to backend web service: $err");
   });
@@ -41,8 +69,9 @@ sub _download ($c) {
   return if $c->res->code;
 
   if ($c->cpan_url->to_string && !($path->size < 4) && !$c->param('no_forward')) {
-    $c->log->info(sprintf 'Distribution "%s" not found locally, proxying to CPAN', $c->current_path);
-    my $tx = $c->ua->build_tx(GET => $c->cpan_url->path($c->current_path));
+    $c->log->info(sprintf 'Distribution "%s" not found locally, downloading from %s', $c->current_path, $c->cpan_url->host_port || $c->cpan_url->path);
+    my $tx = $c->ua->build_tx($c->req->method => $c->cpan_url->path($c->current_path) => $c->req->headers->to_hash => $c->req->body);
+    $tx->req->headers->header('X-DarkPan' => 1);
     $c->proxy->start_p($tx)->catch(sub ($err) {
       $c->app->log->error("Error proxying to CPAN: $err");
       $c->reply->empty(500);
@@ -53,7 +82,7 @@ sub _download ($c) {
         $res->parse($bytes);
         return unless $res->is_finished;
         my $cache = $c->darkpan->paths->first->child($c->param('filename'))->tap(sub{ $_->dirname->make_path });
-        $c->log->info("Caching CPAN distribution to $cache");
+        $c->log->info("Caching downloaded distribution to $cache");
         $res->content->asset->move_to($cache);
       });
     });
@@ -67,9 +96,11 @@ sub _history ($c) {
   $c->render_later;
   return if $c->reply->history($c->param('module'));
   if ($c->metadb_url->to_string && !$c->param('no_forward')) {
-    $c->log->info(sprintf 'Module "%s" not found locally, proxying to CPAN Meta DB', $c->param('module'));
-    $c->proxy->get_p($c->metadb_url->path($c->current_path))->catch(sub ($err) {
-      $c->app->log->error("Error proxying to CPAN Meta DB: $err");
+    $c->log->info(sprintf 'Module "%s" not found locally, checking %s', $c->param('module'), $c->metadb_url->host_port || $c->metadb_url->path);
+    my $tx = $c->ua->build_tx($c->req->method => $c->metadb_url->path($c->current_path) => $c->req->headers->to_hash => $c->req->body);
+    $tx->req->headers->header('X-DarkPan' => 1);
+    $c->proxy->start_p($tx)->catch(sub ($err) {
+      $c->app->log->error(sprintf 'Error proxying to %s: %s', $c->metadb_url->host_port || $c->metadb_url->path, $err);
       $c->reply->empty(500);
     });
   }
@@ -97,7 +128,35 @@ sub _packages ($c) {
   }
 }
 
+sub _pause ($c) {
+  $c->render_later;
+  warn $c->req->url->to_unsafe_string;
+  $c->reply->empty(200);
+}
+
 sub _upload ($c) {
+  $c->render_later;
+  my $userinfo = $c->req->url->userinfo;
+
+  # TODO:
+  # Extract tarball and ensure it contains the necessary Makefile.PL / Build.PL, META files, MANIFEST, etc.
+  #   Make sure the module name and version are extractable
+
+  if (0 && $c->pause_url->to_string && !$c->param('no_forward')) {
+    $c->log->info(sprintf 'Proxying PAUSE authenquery to %s', $c->pause_url->host_port || $c->pause_url->path);
+    my $tx = $c->ua->build_tx($c->req->method => $c->pause_url->userinfo($userinfo)->path($c->current_path) => $c->req->headers->to_hash => $c->req->body);
+    $tx->req->headers->header('X-DarkPan' => 1);
+    $c->proxy->start_p($tx)->catch(sub ($err) {
+      $c->app->log->error("Error proxying to PAUSE: $err");
+      $c->reply->empty(500);
+    });
+  }
+  else {
+    $c->reply->empty(404);
+  }
+}
+
+sub _upload1 ($c) {
   # 1) Get the tarball payload
   # allow raw body upload with ?filename=...
   my $filename = $c->param('filename');

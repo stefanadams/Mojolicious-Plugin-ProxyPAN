@@ -6,7 +6,8 @@ sub register ($self, $app, $config) {
 }
 
 sub _before_dispatch ($c) {
-  $c->log->trace(sprintf '%s "%s"', $c->req->method, $c->req->url);
+  $c->req->url->userinfo($c->basic_authz);
+  $c->log->trace(sprintf '%s "%s"', $c->req->method, $c->req->url->to_abs);
 }
 
 1;
