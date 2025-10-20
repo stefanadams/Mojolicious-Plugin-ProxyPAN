@@ -45,8 +45,7 @@ $ perlbrew list | grep @ | while read; do perlbrew exec --with $REPLY perl -E 's
 # New
 
 ```
-$ function darkpan-upload { root=${2:-~/.cpanm/cache} file=$1 ; curl -A cpanminus -X PUT --data-binary @$root$file ${DARKPAN_URL:-http://127.0.0.1:3000}/dist/$file; }
-$ darkpan-upload S/SA/SADAMS/SADAMS-Test-Module-0.01.tar.gz [~/.cpanm/cache]
+$ perl proxypan cpanify -u a -p b /data/minicpan/authors/id/S/SA/SADAMS/Mojolicious-Plugin-ReplyTime-0.02.tar.gz
 ```
 
 # mojo@ systemd service

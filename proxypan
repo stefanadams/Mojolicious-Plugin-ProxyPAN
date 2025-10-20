@@ -3,6 +3,6 @@ use Mojolicious::Lite -signatures;
 
 use lib 'lib';
 
-plugin 'DarkPAN';
+plugin 'ProxyPAN';
 
 app->start;

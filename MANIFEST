@@ -1,0 +1,20 @@
+cpanfile
+lib/Mojo/ProxyPAN/Distribution.pm
+lib/Mojo/ProxyPAN/Util.pm
+lib/Mojolicious/Command/Author/cpanify.pm
+lib/Mojolicious/Plugin/ProxyPAN.pm
+lib/Mojolicious/Plugin/ProxyPAN/Helpers.pm
+lib/Mojolicious/Plugin/ProxyPAN/Hooks.pm
+lib/Mojolicious/Plugin/ProxyPAN/Routes.pm
+MANIFEST			This list of files
+MANIFEST.SKIP
+modulelist
+MYMETA.json
+MYMETA.yml
+proxypan
+README.md
+t/basic.t
+t/distribution.t
+t/helpers.t
+t/routes.t
+t/util.t
