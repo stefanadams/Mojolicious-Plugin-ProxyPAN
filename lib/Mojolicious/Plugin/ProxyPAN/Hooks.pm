@@ -1,4 +1,4 @@
-package Mojolicious::Plugin::DarkPAN::Hooks;
+package Mojolicious::Plugin::ProxyPAN::Hooks;
 use Mojo::Base 'Mojolicious::Plugin', -signatures;
 
 sub register ($self, $app, $config) {

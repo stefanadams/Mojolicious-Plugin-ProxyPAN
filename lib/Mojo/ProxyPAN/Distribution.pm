@@ -1,4 +1,4 @@
-package Mojo::DarkPAN::Distribution;
+package Mojo::ProxyPAN::Distribution;
 use Mojo::Base -base, -signatures;
 use overload
   cmp => sub {

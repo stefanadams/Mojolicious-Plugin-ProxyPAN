@@ -1,10 +1,10 @@
-package Mojolicious::Plugin::DarkPAN::Routes;
+package Mojolicious::Plugin::ProxyPAN::Routes;
 use Mojo::Base 'Mojolicious::Plugin', -signatures;
 
 use Archive::Extract;
 use Mojo::ByteStream qw(b);
 use Mojo::Collection qw(c);
-use Mojo::DarkPAN::Util qw(read_provides scan_lib merge_provides to_collection);
+use Mojo::ProxyPAN::Util qw(read_provides scan_lib merge_provides to_collection);
 use Mojo::File qw(path tempdir tempfile);
 use Mojo::Message::Response;
 use Mojo::URL;
@@ -19,21 +19,21 @@ sub register ($self, $app, $config) {
   $app->helper('pause_url'  => sub { Mojo::URL->new($ENV{PAUSE_URL}  || $config->{pause_url}  || $self->pause_url) });
 
   my $r = $app->routes;
-  $r->add_condition(darkpan => sub ($route, $c, $captures, $bool) {
-    my $darkpan = $c->req->headers->header('X-DarkPan') || 0;
+  $r->add_condition(proxypan => sub ($route, $c, $captures, $bool) {
+    my $proxypan = $c->req->headers->header('X-DarkPan') || 0;
     # Winner
-    return 1 if $darkpan eq $bool;
+    return 1 if $proxypan eq $bool;
     # Loser
     return undef;
   });
 
   $r->any('/reply/ok' => sub ($c) { $c->reply->empty(200) })->name('reply_ok');
 
-  my $mock = $r->under('/')->requires(agent => qr/^(?!cpanminus$)/, darkpan => 0);
+  my $mock = $r->under('/')->requires(agent => qr/^(?!cpanminus$)/, proxypan => 0);
   $mock->post('/pause/authenquery' => \&_pause)->name('pause');
   $mock->any('/*all' => \&_mock_all)->name('mock_all');
 
-  my $cpanm = $r->under('/')->requires(agent => qr/cpanminus/, darkpan => 0);
+  my $cpanm = $r->under('/')->requires(agent => qr/cpanminus/, proxypan => 0);
   $cpanm->get('/v1.0/history/:module' => \&_history)->name('history');
   $cpanm->get('/modules/02packages.details.txt.gz' => \&_packages)->name('packages');
   $cpanm->get('/authors/id/*filename' => \&_download)->name('download');
@@ -59,7 +59,7 @@ sub _download ($c) {
   $c->render_later;
   my $path = Mojo::Collection->new(Mojo::File->new($c->param('filename'))->to_array->@*)->grep(sub { $_ ne '' });
 
-  $c->darkpan->paths->each(sub ($e, $num) {
+  $c->proxypan->paths->each(sub ($e, $num) {
     return if $c->res->code;
     $_->list_tree->grep(sub{$_->to_rel($e)->to_string eq $path->join('/')})->first(sub {
       $c->log->trace("Found cached file: $_");
@@ -81,7 +81,7 @@ sub _download ($c) {
       Mojo::IOLoop->stream($connection)->on(read => sub ($stream, $bytes) {
         $res->parse($bytes);
         return unless $res->is_finished;
-        my $cache = $c->darkpan->paths->first->child($c->param('filename'))->tap(sub{ $_->dirname->make_path });
+        my $cache = $c->proxypan->paths->first->child($c->param('filename'))->tap(sub{ $_->dirname->make_path });
         $c->log->info("Caching downloaded distribution to $cache");
         $res->content->asset->move_to($cache);
       });
@@ -111,7 +111,7 @@ sub _history ($c) {
 
 sub _packages ($c) {
   $c->render_later;
-  my $cache = $c->darkpan->paths->first->child($c->current_path);
+  my $cache = $c->proxypan->paths->first->child($c->current_path);
   return $c->reply->packages($cache->slurp) if -e $cache;
   if ($c->cpan_url->to_string && !$c->param('no_forward')) {
     $c->ua->get_p($c->cpan_url->path($c->current_path))->then(sub ($tx) {
@@ -160,7 +160,7 @@ sub _pause ($c) {
         $c->log->error("Failed to extract uploaded tarball") and return unless $ae && $ae->extract(to => $workdir);
         my $root = path($ae->extract_path);
         my $packages = to_collection(merge_provides(read_provides($root), scan_lib($root)), $filename);
-        $c->darkpan->save_package($tmpfile, $packages->first);
+        $c->proxypan->save_package($tmpfile, $packages->first);
       });
     });
   }
@@ -187,12 +187,12 @@ sub _upload1 ($c) {
   return $c->reply->empty(422 => sprintf 'Failed to extract uploaded tarball "%s": %s', $tmpfile, ($ae ? $ae->error : 'invalid archive'))
     unless $ae && $ae->extract(to => $workdir);
 
-  # 3) Collect modules from META provides + lib scan and Build Mojo::Collection of Mojo::DarkPAN::Distribution objects
+  # 3) Collect modules from META provides + lib scan and Build Mojo::Collection of Mojo::ProxyPAN::Distribution objects
   my $root = path($ae->extract_path); # root of extracted dist
   my $col = to_collection(merge_provides(read_provides($root), scan_lib($root)), $filename);
 
   # 4) Render result
-  $c->darkpan->save_package($tmpfile, $col->first);
+  $c->proxypan->save_package($tmpfile, $col->first);
   $c->render(text => $col->join("\n"));
 }
 

@@ -1,4 +1,4 @@
-package Mojo::DarkPAN::Util;
+package Mojo::ProxyPAN::Util;
 use Mojo::Base -strict, -signatures;
 
 use CPAN::Meta;            # reads META.json / META.yml / META.yaml
@@ -6,7 +6,7 @@ use Exporter qw(import);
 use File::Find ();
 use Module::Metadata;      # parses package + version from .pm
 use Mojo::Collection;
-use Mojo::DarkPAN::Distribution;
+use Mojo::ProxyPAN::Distribution;
 use Mojo::File qw(path tempdir);
 
 our @EXPORT_OK = qw(read_provides scan_lib merge_provides to_collection);
@@ -80,13 +80,13 @@ sub merge_provides ($meta_prov, $scan) {
   return \%merged;
 }
 
-# Convert merged hash -> Mojo::Collection of Mojo::DarkPAN::Distribution objects
+# Convert merged hash -> Mojo::Collection of Mojo::ProxyPAN::Distribution objects
 sub to_collection ($merged, $filename) {
   my $dists = Mojo::Collection->new;
   for my $pkg (sort keys %$merged) {
     my $v = $merged->{$pkg}{version};
     my $f = $merged->{$pkg}{file} // ''; # may be undef if not in META/scan
-    push @$dists, Mojo::DarkPAN::Distribution->new({
+    push @$dists, Mojo::ProxyPAN::Distribution->new({
       module   => $pkg,
       version  => defined $v ? "$v" : 'undef',
       filename => $filename,

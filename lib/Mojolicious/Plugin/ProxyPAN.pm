@@ -1,12 +1,12 @@
-package Mojolicious::Plugin::DarkPAN;
+package Mojolicious::Plugin::ProxyPAN;
 use Mojo::Base 'Mojolicious::Plugin', -signatures;
 
 sub register ($self, $app, $config) {
   $app->plugin('HeaderCondition');
-  $app->plugin('Mojolicious::Plugin::DarkPAN::Helpers');
-  $app->plugin('Mojolicious::Plugin::DarkPAN::Hooks');
-  $app->plugin('Mojolicious::Plugin::DarkPAN::Routes' => $config);
-  $app->sql->migrations->from_data('Mojolicious::Plugin::DarkPAN')->migrate;
+  $app->plugin('Mojolicious::Plugin::ProxyPAN::Helpers');
+  $app->plugin('Mojolicious::Plugin::ProxyPAN::Hooks');
+  $app->plugin('Mojolicious::Plugin::ProxyPAN::Routes' => $config);
+  $app->sql->migrations->from_data('Mojolicious::Plugin::ProxyPAN')->migrate;
   $app->ua->on(prepare => sub ($ua, $tx) {
     $tx->req->url->scheme('http') if $tx->req->url->scheme && $tx->req->url->scheme eq 'https';
   });
