@@ -11,7 +11,7 @@ use Mojo::URL;
 
 has cpan_url   => 'http://www.cpan.org';
 has metadb_url => 'http://cpanmetadb.plackperl.org';
-has pause_url  => 'http://pause.perl.org';
+has pause_url  => '/reply/ok'; # 'http://pause.perl.org';
 
 sub register ($self, $app, $config) {
   $app->helper('cpan_url'   => sub { Mojo::URL->new($ENV{CPAN_URL} || $config->{cpan_url} || $self->cpan_url) });
@@ -27,6 +27,8 @@ sub register ($self, $app, $config) {
     return undef;
   });
 
+  $r->any('/reply/ok' => sub ($c) { $c->reply->empty(200) })->name('reply_ok');
+
   my $mock = $r->under('/')->requires(agent => qr/^(?!cpanminus$)/, darkpan => 0);
   $mock->post('/pause/authenquery' => \&_pause)->name('pause');
   $mock->any('/*all' => \&_mock_all)->name('mock_all');
@@ -35,8 +37,6 @@ sub register ($self, $app, $config) {
   $cpanm->get('/v1.0/history/:module' => \&_history)->name('history');
   $cpanm->get('/modules/02packages.details.txt.gz' => \&_packages)->name('packages');
   $cpanm->get('/authors/id/*filename' => \&_download)->name('download');
-  # $cpanm->put('/authors/id/*filename' => \&_upload)->name('upload');
-  $cpanm->post('/pause/authenquery' => \&_upload)->name('upload');
   $cpanm->any('/*all' => \&_all)->name('all');
 }
 
@@ -130,25 +130,38 @@ sub _packages ($c) {
 
 sub _pause ($c) {
   $c->render_later;
-  warn $c->req->url->to_unsafe_string;
-  $c->reply->empty(200);
-}
-
-sub _upload ($c) {
-  $c->render_later;
   my $userinfo = $c->req->url->userinfo;
 
-  # TODO:
-  # Extract tarball and ensure it contains the necessary Makefile.PL / Build.PL, META files, MANIFEST, etc.
-  #   Make sure the module name and version are extractable
-
-  if (0 && $c->pause_url->to_string && !$c->param('no_forward')) {
-    $c->log->info(sprintf 'Proxying PAUSE authenquery to %s', $c->pause_url->host_port || $c->pause_url->path);
-    my $tx = $c->ua->build_tx($c->req->method => $c->pause_url->userinfo($userinfo)->path($c->current_path) => $c->req->headers->to_hash => $c->req->body);
+  if ($c->pause_url->to_string && !$c->param('no_forward')) {
+    my $url = $c->pause_url->clone->userinfo($userinfo);
+    $url->path($c->current_path) if $url->host_port;
+    $c->req->headers->remove('Host');
+    $c->log->info(sprintf 'Proxying PAUSE authenquery to %s %s', $c->req->method, $url);
+    my $tx = $c->ua->build_tx($c->req->method => $url => $c->req->headers->dehop->to_hash => $c->req->clone->build_body);
     $tx->req->headers->header('X-DarkPan' => 1);
     $c->proxy->start_p($tx)->catch(sub ($err) {
       $c->app->log->error("Error proxying to PAUSE: $err");
       $c->reply->empty(500);
+    });
+    $tx->on(connection => sub ($tx, $connection) {
+      my $req = Mojo::Message::Request->new;
+      Mojo::IOLoop->stream($connection)->on(write => sub ($stream, $bytes) {
+        $req->parse($bytes);
+        return unless $req->is_finished;
+        my ($part) = grep { $_->headers->content_disposition =~ /name="pause99_add_uri_httpupload"/ } @{$req->content->parts};
+        my ($filename) = $part->headers->content_disposition =~ /filename="(.*?)"/;
+        my $dirname  = path($filename)->dirname;
+        my $basename = path($filename)->basename;
+        my $tmpdir   = tempdir;
+        my $tmpfile  = path($tmpdir, $basename);
+        my $workdir  = tempdir;
+        $part->asset->move_to($tmpfile);
+        my $ae = Archive::Extract->new(archive => $tmpfile);
+        $c->log->error("Failed to extract uploaded tarball") and return unless $ae && $ae->extract(to => $workdir);
+        my $root = path($ae->extract_path);
+        my $packages = to_collection(merge_provides(read_provides($root), scan_lib($root)), $filename);
+        $c->darkpan->save_package($tmpfile, $packages->first);
+      });
     });
   }
   else {

@@ -50,7 +50,7 @@ sub _darkpan_save_package ($c, $tmpfile, $dist) {
     $db->insert('packages', {module => $dist->module, version => $dist->version, filename => $dist->path}, {on_conflict => undef});
     $tx->commit;
   };
-  $c->log->info(sprintf 'Saving uploaded distribution to %s', $tmpfile->move_to($move_to->tap(sub { $_->dirname->make_path }))) unless $@;
+  $c->log->info(sprintf 'Saving uploaded distribution %s %s to %s', $dist->module, $dist->version, $tmpfile->move_to($move_to->tap(sub { $_->dirname->make_path }))) unless $@;
 }
 
 sub _proxied ($c, $url) { $c->req->url->host_port eq $url->host_port or 0 }

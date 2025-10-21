@@ -8,7 +8,7 @@ sub register ($self, $app, $config) {
   $app->plugin('Mojolicious::Plugin::DarkPAN::Routes' => $config);
   $app->sql->migrations->from_data('Mojolicious::Plugin::DarkPAN')->migrate;
   $app->ua->on(prepare => sub ($ua, $tx) {
-    $tx->req->url->scheme('http') if $tx->req->url->scheme eq 'https';
+    $tx->req->url->scheme('http') if $tx->req->url->scheme && $tx->req->url->scheme eq 'https';
   });
 }
 
