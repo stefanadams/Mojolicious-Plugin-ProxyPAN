@@ -29,9 +29,8 @@ sub dist ($self, $dist=undef, $version=undef) {
   }
 }
 
-sub path ($self) {
-  my $filename = Mojo::File->new($self->filename);
-  $#$filename ? $filename : Mojo::File->new($self->dist, $self->filename);
+sub is_main ($self) {
+  return $self->module =~ s/::/-/gr eq $self->dist;
 }
 
 sub new {
@@ -53,6 +52,11 @@ sub new {
   }
   %$self = %$args if scalar keys %$args;
   return $self;
+}
+
+sub path ($self) {
+  my $filename = Mojo::File->new($self->filename);
+  $#$filename ? $filename : Mojo::File->new(0, 0, 0, $self->dist, $self->filename);
 }
 
 sub to_array ($self) {

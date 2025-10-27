@@ -1,199 +1,133 @@
 package Mojolicious::Plugin::ProxyPAN::Routes;
 use Mojo::Base 'Mojolicious::Plugin', -signatures;
 
-use Archive::Extract;
-use Mojo::ByteStream qw(b);
-use Mojo::Collection qw(c);
-use Mojo::ProxyPAN::Util qw(read_provides scan_lib merge_provides to_collection);
-use Mojo::File qw(path tempdir tempfile);
-use Mojo::Message::Response;
+use Mojo::IOLoop;
 use Mojo::URL;
 
-has cpan_url   => 'http://www.cpan.org';
-has metadb_url => 'http://cpanmetadb.plackperl.org';
-has pause_url  => '/reply/ok'; # 'http://pause.perl.org';
-
 sub register ($self, $app, $config) {
-  $app->helper('cpan_url'   => sub { Mojo::URL->new($ENV{CPAN_URL} || $config->{cpan_url} || $self->cpan_url) });
-  $app->helper('metadb_url' => sub { Mojo::URL->new($ENV{METADB_URL} || $config->{metadb_url} || $self->metadb_url) });
-  $app->helper('pause_url'  => sub { Mojo::URL->new($ENV{PAUSE_URL}  || $config->{pause_url}  || $self->pause_url) });
+  $app->plugin('HeaderCondition');
 
-  my $r = $app->routes;
-  $r->add_condition(proxypan => sub ($route, $c, $captures, $bool) {
-    my $proxypan = $c->req->headers->header('X-DarkPan') || 0;
-    # Winner
-    return 1 if $proxypan eq $bool;
-    # Loser
-    return undef;
+  my $r = $app->routes->namespaces([__PACKAGE__])->add_condition(proxypan => \&_proxypan);
+
+  my $intercept = $r->under('/')->requires(proxypan => 0);
+  $intercept->post('/pause/authenquery')->to('pause#upload', base => $config->{pause_url})->name('pause_upload');
+  $intercept->get('/v1.0/:api/:module' => [api => [qw(history package)]])->to('metadb#api', base => $config->{metadb_url})->name('metadb_api');
+  $intercept->get('/authors/00whois' => [format => [qw(html xml)]])->to('cpan#not_implemented', base => $config->{cpan_url})->name('whois');
+  $intercept->get('/authors/01mailrc.txt.gz')->to('cpan#not_implemented', base => $config->{cpan_url})->name('cpan_mailrc');
+  $intercept->get('/authors/id/*filename')->to('cpan#download', base => $config->{cpan_url})->name('cpan_download');
+  $intercept->get('/modules/01modules.index' => [format => [qw(html)]])->to('cpan#not_implemented', base => $config->{cpan_url})->name('cpan_modules');
+  $intercept->get('/modules/01modules.mtime' => [format => [qw(html)]])->to('cpan#not_implemented', base => $config->{cpan_url})->name('cpan_recent');
+  $intercept->get('/modules/02packages.details.txt.gz')->to('cpan#packages', base => $config->{cpan_url})->name('cpan_packages');
+  $intercept->get('/modules/03modlist.data.gz')->to('cpan#not_implemented', base => $config->{cpan_url})->name('cpan_modlist');
+  $intercept->get('/modules/06perms.txt.gz')->to('cpan#not_implemented', base => $config->{cpan_url})->name('cpan_perms');
+
+  $r->any('/*whatever')->to('mock#whatever')->name('whatever');
+}
+
+sub _proxypan ($route, $c, $captures, $bool) {
+  my $proxypan = $c->req->headers->header('X-ProxyPan') || 0;
+  my $ok = $proxypan eq $bool ? 1 : undef;
+  $c->log->trace(sprintf 'requires proxypan => %s', $bool) unless $ok;
+  return $ok;
+}
+
+package Mojolicious::Plugin::ProxyPAN::Routes::Base;
+use Mojo::Base 'Mojolicious::Controller', -signatures;
+
+use Mojo::IOLoop;
+use Mojo::Message::Request;
+use Mojo::Message::Response;
+use Mojo::ProxyPAN::Util qw(head_req);
+use Mojo::URL;
+
+has 'base';
+
+sub base_url ($self) { Mojo::URL->new($self->_env_url || $self->stash('base') || $self->base) }
+
+sub _env_url { $ENV{uc(sprintf '%s_URL', ((split /::/, ref $_[0])[-1]))} }
+
+package Mojolicious::Plugin::ProxyPAN::Routes::Mock;
+use Mojo::Base 'Mojolicious::Plugin::ProxyPAN::Routes::Base', -signatures;
+
+sub whatever ($self) {
+  $self->log->trace(sprintf 'Mocking %s request: %s %s', $self->req->headers->user_agent, $self->req->method, $self->req->url);
+  $self->reply->empty(200);
+}
+
+package Mojolicious::Plugin::ProxyPAN::Routes::Metadb;
+use Mojo::Base 'Mojolicious::Plugin::ProxyPAN::Routes::Base', -signatures;
+
+has base => 'http://cpanmetadb.plackperl.org';
+
+sub api ($self) {
+  my $api = $self->stash('api');
+  return if $self->reply->$api($self->param('module'));
+
+  $self->proxy_p($self->base_url);
+}
+
+package Mojolicious::Plugin::ProxyPAN::Routes::Pause;
+use Mojo::Base 'Mojolicious::Plugin::ProxyPAN::Routes::Base', -signatures;
+
+use Mojo::Message::Request;
+
+has base => 'http://pause.perl.org';
+
+sub upload ($self) {
+  $self->proxy_p($self->base_url, upload => sub ($msg) {
+    my $filename = $msg->body_params->param('pause99_add_uri_upload');
+    my ($part) = grep { $_->headers->content_disposition =~ /name="pause99_add_uri_httpupload"/ } @{$msg->content->parts};
+    $self->proxypan->save($part->asset, $filename);
   });
-
-  $r->any('/reply/ok' => sub ($c) { $c->reply->empty(200) })->name('reply_ok');
-
-  my $mock = $r->under('/')->requires(agent => qr/^(?!cpanminus$)/, proxypan => 0);
-  $mock->post('/pause/authenquery' => \&_pause)->name('pause');
-  $mock->any('/*all' => \&_mock_all)->name('mock_all');
-
-  my $cpanm = $r->under('/')->requires(agent => qr/cpanminus/, proxypan => 0);
-  $cpanm->get('/v1.0/history/:module' => \&_history)->name('history');
-  $cpanm->get('/modules/02packages.details.txt.gz' => \&_packages)->name('packages');
-  $cpanm->get('/authors/id/*filename' => \&_download)->name('download');
-  $cpanm->any('/*all' => \&_all)->name('all');
 }
 
-sub _mock_all ($c) {
-  $c->log->trace(sprintf 'Mocking request: %s %s', $c->req->method, $c->req->url);
-  warn $c->req->url->to_unsafe_string;
-  $c->reply->empty(200);
+package Mojolicious::Plugin::ProxyPAN::Routes::Cpan;
+use Mojo::Base 'Mojolicious::Plugin::ProxyPAN::Routes::Base', -signatures;
+
+use Mojo::Collection;
+use Mojo::Message::Response;
+
+has base => 'http://www.cpan.org';
+
+sub not_implemented ($self) {
+  $self->proxy_p($self->base_url);
 }
 
-sub _all ($c) {
-  $c->log->trace(sprintf 'Proxying request: %s %s', $c->req->method, $c->req->url);
-  my $tx = $c->ua->build_tx($c->req->method => $c->req->url->to_abs => $c->req->headers->to_hash => $c->req->body);
-  $tx->req->headers->header('X-DarkPan' => 1);
-  $c->proxy->start_p($tx)->catch(sub ($err) {
-    $c->reply->empty(400 => "Proxy could not connect to backend web service: $err");
+sub download ($self) {
+  my $path = Mojo::Path->new($self->param('filename'))->canonicalize;
+  my $filename = $path->parts->[-1];
+  $self->proxypan->paths->each(sub ($e, $num) {
+    return if $self->res->code;
+    $_->list_tree->grep(sub{$_->to_rel($e)->to_string eq $path->leading_slash(0)})->first(sub {
+      $self->log->trace("Found cached file: $_");
+      $self->reply->file($_->to_abs->to_string);
+    });
+  });
+  return if $self->res->code;
+  $self->log->info(sprintf 'Distribution "%s" not found locally', $filename);
+
+  $self->proxy_p($self->base_url, download => sub ($msg) {
+    $self->proxypan->save($msg->content, $filename);
   });
 }
 
-sub _download ($c) {
-  $c->render_later;
-  my $path = Mojo::Collection->new(Mojo::File->new($c->param('filename'))->to_array->@*)->grep(sub { $_ ne '' });
+sub packages ($self) {
+  $self->render_later;
 
-  $c->proxypan->paths->each(sub ($e, $num) {
-    return if $c->res->code;
-    $_->list_tree->grep(sub{$_->to_rel($e)->to_string eq $path->join('/')})->first(sub {
-      $c->log->trace("Found cached file: $_");
-      $c->reply->file($_->to_abs->to_string);
-    });
+  my $base = Mojo::URL->new($ENV{CPAN_URL} || $self->stash('base') || $self->base);
+
+  my $cache = $self->proxypan->paths->first->child($self->current_path);
+  return $self->reply->packages($cache->slurp) if -e $cache;
+  return $self->reply->empty(404) unless $base->to_string || $self->param('no_forward');
+
+  $self->ua->get_p($base->path($self->current_path))->then(sub ($tx) {
+    die "Failed to fetch from CPAN" unless $tx->result->is_success;
+    $tx->result->content->asset->move_to($cache->tap(sub{ $_->dirname->make_path }));
+    $self->reply->packages($tx->result->body);
+  })->catch(sub ($err) {
+    $self->app->log->error("Error proxying to CPAN: $err");
+    $self->reply->empty(500);
   });
-  return if $c->res->code;
-
-  if ($c->cpan_url->to_string && !($path->size < 4) && !$c->param('no_forward')) {
-    $c->log->info(sprintf 'Distribution "%s" not found locally, downloading from %s', $c->current_path, $c->cpan_url->host_port || $c->cpan_url->path);
-    my $tx = $c->ua->build_tx($c->req->method => $c->cpan_url->path($c->current_path) => $c->req->headers->to_hash => $c->req->body);
-    $tx->req->headers->header('X-DarkPan' => 1);
-    $c->proxy->start_p($tx)->catch(sub ($err) {
-      $c->app->log->error("Error proxying to CPAN: $err");
-      $c->reply->empty(500);
-    });
-    $tx->on(connection => sub ($tx, $connection) {
-      my $res = Mojo::Message::Response->new;
-      Mojo::IOLoop->stream($connection)->on(read => sub ($stream, $bytes) {
-        $res->parse($bytes);
-        return unless $res->is_finished;
-        my $cache = $c->proxypan->paths->first->child($c->param('filename'))->tap(sub{ $_->dirname->make_path });
-        $c->log->info("Caching downloaded distribution to $cache");
-        $res->content->asset->move_to($cache);
-      });
-    });
-  }
-  else {
-    $c->reply->empty(404);
-  }
-}
-
-sub _history ($c) {
-  $c->render_later;
-  return if $c->reply->history($c->param('module'));
-  if ($c->metadb_url->to_string && !$c->param('no_forward')) {
-    $c->log->info(sprintf 'Module "%s" not found locally, checking %s', $c->param('module'), $c->metadb_url->host_port || $c->metadb_url->path);
-    my $tx = $c->ua->build_tx($c->req->method => $c->metadb_url->path($c->current_path) => $c->req->headers->to_hash => $c->req->body);
-    $tx->req->headers->header('X-DarkPan' => 1);
-    $c->proxy->start_p($tx)->catch(sub ($err) {
-      $c->app->log->error(sprintf 'Error proxying to %s: %s', $c->metadb_url->host_port || $c->metadb_url->path, $err);
-      $c->reply->empty(500);
-    });
-  }
-  else {
-    $c->reply->empty(404);
-  }
-}
-
-sub _packages ($c) {
-  $c->render_later;
-  my $cache = $c->proxypan->paths->first->child($c->current_path);
-  return $c->reply->packages($cache->slurp) if -e $cache;
-  if ($c->cpan_url->to_string && !$c->param('no_forward')) {
-    $c->ua->get_p($c->cpan_url->path($c->current_path))->then(sub ($tx) {
-      die "Failed to fetch from CPAN" unless $tx->result->is_success;
-      $tx->result->content->asset->move_to($cache->tap(sub{ $_->dirname->make_path }));
-      $c->reply->packages($tx->result->body);
-    })->catch(sub ($err) {
-      $c->app->log->error("Error proxying to CPAN: $err");
-      $c->reply->empty(500);
-    });
-  }
-  else {
-    $c->reply->packages;
-  }
-}
-
-sub _pause ($c) {
-  $c->render_later;
-  my $userinfo = $c->req->url->userinfo;
-
-  if ($c->pause_url->to_string && !$c->param('no_forward')) {
-    my $url = $c->pause_url->clone->userinfo($userinfo);
-    $url->path($c->current_path) if $url->host_port;
-    $c->req->headers->remove('Host');
-    $c->log->info(sprintf 'Proxying PAUSE authenquery to %s %s', $c->req->method, $url);
-    my $tx = $c->ua->build_tx($c->req->method => $url => $c->req->headers->dehop->to_hash => $c->req->clone->build_body);
-    $tx->req->headers->header('X-DarkPan' => 1);
-    $c->proxy->start_p($tx)->catch(sub ($err) {
-      $c->app->log->error("Error proxying to PAUSE: $err");
-      $c->reply->empty(500);
-    });
-    $tx->on(connection => sub ($tx, $connection) {
-      my $req = Mojo::Message::Request->new;
-      Mojo::IOLoop->stream($connection)->on(write => sub ($stream, $bytes) {
-        $req->parse($bytes);
-        return unless $req->is_finished;
-        my ($part) = grep { $_->headers->content_disposition =~ /name="pause99_add_uri_httpupload"/ } @{$req->content->parts};
-        my ($filename) = $part->headers->content_disposition =~ /filename="(.*?)"/;
-        my $dirname  = path($filename)->dirname;
-        my $basename = path($filename)->basename;
-        my $tmpdir   = tempdir;
-        my $tmpfile  = path($tmpdir, $basename);
-        my $workdir  = tempdir;
-        $part->asset->move_to($tmpfile);
-        my $ae = Archive::Extract->new(archive => $tmpfile);
-        $c->log->error("Failed to extract uploaded tarball") and return unless $ae && $ae->extract(to => $workdir);
-        my $root = path($ae->extract_path);
-        my $packages = to_collection(merge_provides(read_provides($root), scan_lib($root)), $filename);
-        $c->proxypan->save_package($tmpfile, $packages->first);
-      });
-    });
-  }
-  else {
-    $c->reply->empty(404);
-  }
-}
-
-sub _upload1 ($c) {
-  # 1) Get the tarball payload
-  # allow raw body upload with ?filename=...
-  my $filename = $c->param('filename');
-  my $dirname = path($filename)->dirname;
-  my $basename = path($filename)->basename;
-  my $tmpdir   = tempdir;
-  my $tmpfile  = path($tmpdir, $basename);
-  my $bytes    = $c->req->body;
-  return $c->reply->empty(400) unless defined $bytes && length $bytes;
-  $tmpfile->spurt($bytes);
-
-  # 2) Extract to a temp directory
-  my $workdir = tempdir;
-  my $ae = Archive::Extract->new(archive => $tmpfile);
-  return $c->reply->empty(422 => sprintf 'Failed to extract uploaded tarball "%s": %s', $tmpfile, ($ae ? $ae->error : 'invalid archive'))
-    unless $ae && $ae->extract(to => $workdir);
-
-  # 3) Collect modules from META provides + lib scan and Build Mojo::Collection of Mojo::ProxyPAN::Distribution objects
-  my $root = path($ae->extract_path); # root of extracted dist
-  my $col = to_collection(merge_provides(read_provides($root), scan_lib($root)), $filename);
-
-  # 4) Render result
-  $c->proxypan->save_package($tmpfile, $col->first);
-  $c->render(text => $col->join("\n"));
 }
 
 1;

@@ -9,7 +9,7 @@ use Mojo::Collection;
 use Mojo::ProxyPAN::Distribution;
 use Mojo::File qw(path tempdir);
 
-our @EXPORT_OK = qw(read_provides scan_lib merge_provides to_collection);
+our @EXPORT_OK = qw(read_provides scan_lib merge_provides to_collection head_req);
 
 # Small helper: read META provides if present
 sub read_provides ($root) {
@@ -94,5 +94,7 @@ sub to_collection ($merged, $filename) {
   }
   return $dists;
 }
+
+sub head_req ($req) { warn sprintf "%s (%s)%s\n%s\n", $req->method, $req->url->base, $req->url->path, $req->headers->to_string }
 
 1;

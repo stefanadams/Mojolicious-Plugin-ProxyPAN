@@ -2,7 +2,6 @@ package Mojolicious::Plugin::ProxyPAN;
 use Mojo::Base 'Mojolicious::Plugin', -signatures;
 
 sub register ($self, $app, $config) {
-  $app->plugin('HeaderCondition');
   $app->plugin('Mojolicious::Plugin::ProxyPAN::Helpers');
   $app->plugin('Mojolicious::Plugin::ProxyPAN::Hooks');
   $app->plugin('Mojolicious::Plugin::ProxyPAN::Routes' => $config);
@@ -17,9 +16,16 @@ sub register ($self, $app, $config) {
 __DATA__
 @@ migrations
   -- 1 up
-create table packages (id integer primary key autoincrement, module text, version text, filename text unique);
-insert into packages (module, version, filename) values ('Example::Module', '1.23', 'Example-Module-1.23.tar.gz');
-insert into packages (module, version, filename) values ('Example::Module', '2.34', 'A/AA/AAA/Example-Module-2.34.tar.gz');
+create table package  (filename text primary key, dist text, module text, version text, package text);
+create table packages (
+  id integer primary key autoincrement,
+  module text,
+  version text,
+  filename text,
+  foreign key(filename) references package(filename),
+  unique(module, version, filename)
+);
 -- 1 down
 drop table packages;
+drop table package;
 EOF
