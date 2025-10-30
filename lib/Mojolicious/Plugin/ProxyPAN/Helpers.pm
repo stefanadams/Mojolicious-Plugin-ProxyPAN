@@ -134,7 +134,7 @@ sub _proxypan_paths ($c, $proxypan_paths) {
 }
 
 sub _proxypan_package ($c, $module) {
-  eval { $c->sql->db->select('packages', ['package'], {module => $module})->hash->{package} };
+  eval { $c->sql->db->select('history', undef, {module => $module})->hashes };
 }
 
 sub _proxypan_packages ($c) {

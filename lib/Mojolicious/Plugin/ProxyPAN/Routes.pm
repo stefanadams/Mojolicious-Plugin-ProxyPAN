@@ -57,13 +57,39 @@ sub whatever ($self) {
 package Mojolicious::Plugin::ProxyPAN::Routes::Metadb;
 use Mojo::Base 'Mojolicious::Plugin::ProxyPAN::Routes::Base', -signatures;
 
+use Mojo::File qw(path);
+use YAML::XS qw(Dump Load);
+use Scalar::Util qw(looks_like_number);
+
 has base => 'http://cpanmetadb.plackperl.org';
 
 sub api ($self) {
   my $api = $self->stash('api');
   return if $self->reply->$api($self->param('module'));
 
-  $self->proxy_p($self->base_url);
+  $self->proxy_p($self->base_url, download => sub ($msg) {
+    if ($api eq 'package') {
+      my $package = Load($msg->body);
+      my ($dist, $version) = $package->{distfile} =~ m{([^/\\]+)-v?([\d._]+)\.(tar\.gz|tgz|zip)\z};
+      $package->{distfile} = path($package->{distfile})->basename;
+      $version = '6.03_1';
+      $package->{dist} = {$dist=~s/-/::/gr => looks_like_number($version) ? 0+$version : $version};
+      $package->{module} = $self->param('module');
+      my ($m, $v) = each $package->{dist}->%*;
+      warn Dump($package);
+
+      # my $db = $self->sql->db;
+      # eval {
+      #   my $tx = $db->begin;
+      #   $db->insert('package', {filename => $package->{distfile}, dist => $dist, module => $m, version => $v}, {on_conflict => undef});
+      #   foreach my $m (keys $package->{provides}->%*) {
+      #     my $v = $package->{provides}->{$m};
+      #     $db->insert('history', {module => $m, version => $v, filename => $package->{distfile}}, {on_conflict => undef});
+      #   }
+      #   $tx->commit;
+      # };
+    }
+  });
 }
 
 package Mojolicious::Plugin::ProxyPAN::Routes::Pause;
