@@ -12,7 +12,7 @@ sub register ($self, $app, $config) {
   my $intercept = $r->under('/')->requires(proxypan => 0);
   $intercept->post('/pause/authenquery')->to('pause#upload', base => $config->{pause_url})->name('pause_upload');
   $intercept->get('/v1.0/:api/:module' => [api => [qw(history package)]])->to('metadb#api', base => $config->{metadb_url})->name('metadb_api');
-  $intercept->get('/v1/download_url/:module')->to('metacpan#download_url', base => $config->{metacpan_url})->name('metacpan_download_url');
+  $intercept->get('/v1/download_url/:module')->to('metacpan#download_url', base => $config->{metacpan_url}, cpan => $config->{cpan_url})->name('metacpan_download_url');
   $intercept->get('/authors/00whois' => [format => [qw(html xml)]])->to('cpan#not_implemented', base => $config->{cpan_url})->name('whois');
   $intercept->get('/authors/01mailrc.txt.gz')->to('cpan#not_implemented', base => $config->{cpan_url})->name('cpan_mailrc');
   $intercept->get('/authors/id/*filename')->to('cpan#download', base => $config->{cpan_url})->name('cpan_download');
@@ -113,6 +113,9 @@ use Mojo::Collection;
 use Mojo::Message::Response;
 
 has base => 'http://fastapi.metacpan.org';
+has cpan => 'http://www.cpan.org';
+
+sub cpan_url ($self) { Mojo::URL->new($ENV{CPAN_URL} || $self->stash('cpan') || $self->cpan) }
 
 sub download_url ($self) {
   my $module = $self->param('module');
@@ -120,7 +123,7 @@ sub download_url ($self) {
   my $result = $self->sql->db->select('download_url_vw', ['filename', 'distribution', 'release', 'version'], {module => $module, %version})->hash;
   if ($result) {
     $self->log->trace(sprintf 'Found download URL for module %s: %s', $module, $result->{filename});
-    $result->{download_url} = Mojo::URL->new('http://www.cpan.org')->path(sprintf '/authors/id/%s/%s', $result->{distribution}, $result->{filename})->to_abs;
+    $result->{download_url} = Mojo::URL->new($self->cpan_url)->path(sprintf '/authors/id/%s/%s', $result->{distribution}, $result->{filename})->to_abs;
     $self->render(json => $result);
   }
   else {

@@ -50,7 +50,7 @@ sub _proxy_p ($c, $base, $on=undef, $cb=undef) {
   my $method = $req->method;
   my $headers = $req->headers->clone->dehop;
   my $body = $req->clone->build_body;
-  my $url = $base->clone->path_query($req->url->path_query)->fragment($req->url->fragment);
+  my $url = $base->path ? $base : $base->clone->path_query($req->url->path_query)->fragment($req->url->fragment);
   $c->log->info(sprintf 'Proxying from %s (%s)%s', $method, $url->base, $url->path);
   $url->base($base) if $base->host;
   $c->log->info(sprintf 'Proxying to %s (%s)%s', $method, $url->base, $url->path);
