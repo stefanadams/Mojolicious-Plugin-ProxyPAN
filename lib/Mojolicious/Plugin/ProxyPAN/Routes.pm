@@ -10,7 +10,7 @@ sub register ($self, $app, $config) {
   my $r = $app->routes->namespaces([__PACKAGE__])->add_condition(proxypan => \&_proxypan);
 
   my $intercept = $r->under('/')->requires(proxypan => 0);
-  $intercept->post('/pause/authenquery')->to('pause#upload', base => $config->{pause_url})->name('pause_upload');
+  $intercept->post('/pause/authenquery')->to('pause#upload', base => $config->{pause_url}, method => $config->{pause_method})->name('pause_upload');
   $intercept->get('/v1.0/:api/:module' => [api => [qw(history package)]])->to('metadb#api', base => $config->{metadb_url})->name('metadb_api');
   $intercept->get('/v1/download_url/:module')->to('metacpan#download_url', base => $config->{metacpan_url}, cpan => $config->{cpan_url})->name('metacpan_download_url');
   $intercept->get('/authors/00whois' => [format => [qw(html xml)]])->to('cpan#not_implemented', base => $config->{cpan_url})->name('whois');
@@ -96,14 +96,16 @@ use Mojo::Base 'Mojolicious::Plugin::ProxyPAN::Routes::Base', -signatures;
 
 use Mojo::Message::Request;
 
-has base => 'http://pause.perl.org';
+has base   => 'http://pause.perl.org';
+has method => sub { $ENV{PAUSE_METHOD} || shift->stash('method') };
 
 sub upload ($self) {
-  $self->proxy_p($self->base_url, upload => sub ($msg) {
-    my $filename = $msg->body_params->param('pause99_add_uri_upload');
-    my ($part) = grep { $_->headers->content_disposition =~ /name="pause99_add_uri_httpupload"/ } @{$msg->content->parts};
-    $self->proxypan->save($part->asset, $filename);
-  });
+  $self->stash(method => $self->method) if $self->method;
+  my $filename = $self->req->body_params->param('pause99_add_uri_upload');
+  my ($part) = grep { $_->headers->content_disposition =~ /name="pause99_add_uri_httpupload"/ } @{$self->req->content->parts};
+  my $path = $self->proxypan->save($part->asset, $filename);
+  $self->req->url->path->parse($self->base_url->path->to_string =~ s@%f@$path@r);
+  $self->proxy_p(Mojo::URL->new->scheme($self->base_url->scheme)->host($self->base_url->host)->port($self->base_url->port));
 }
 
 package Mojolicious::Plugin::ProxyPAN::Routes::Metacpan;

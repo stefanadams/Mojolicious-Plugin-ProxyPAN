@@ -47,14 +47,14 @@ sub _proxy_p ($c, $base, $on=undef, $cb=undef) {
   my $tx = $c->render_later->tx;
 
   my $req = $c->req;
-  my $method = $req->method;
+  my $method = $c->stash('method') || $req->method;
   my $headers = $req->headers->clone->dehop;
   my $body = $req->clone->build_body;
   my $url = $base->path->to_string ? $base : $base->clone->path_query($req->url->path_query)->fragment($req->url->fragment);
   $c->log->info(sprintf 'Proxying from %s (%s)%s', $method, $url->base, $url->path);
   $url->base($base) if $base->host;
   $c->log->info(sprintf 'Proxying to %s (%s)%s', $method, $url->base, $url->path);
-  $req->headers->host($url->host_port) if $url->host_port;
+  $headers->host($url->host_port) if $url->host_port;
   my $source_tx = $c->ua->build_tx($method => $url => $headers->to_hash => $body);
   $source_tx->req->headers->header('X-ProxyPan' => 1);
   $source_tx->req->headers->remove('Accept-Encoding');  # let us handle compression
@@ -207,6 +207,7 @@ sub _proxypan_save_dist ($c, $packages, $tmpfile) {
   };
   $c->log->error("Database error saving package " . $dist->module . " " . $dist->version . ": $@") if $@;
   $c->log->info(sprintf 'Saving uploaded distribution %s %s to %s', $dist->module, $dist->version, $tmpfile->move_to($move_to->tap(sub { $_->dirname->make_path }))) unless $@;
+  return $dist->path;
 }
 
 sub _proxied ($c, $url) { $c->req->url->host_port eq $url->host_port or 0 }
