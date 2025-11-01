@@ -12,6 +12,7 @@ sub register ($self, $app, $config) {
   my $intercept = $r->under('/')->requires(proxypan => 0);
   $intercept->post('/pause/authenquery')->to('pause#upload', base => $config->{pause_url})->name('pause_upload');
   $intercept->get('/v1.0/:api/:module' => [api => [qw(history package)]])->to('metadb#api', base => $config->{metadb_url})->name('metadb_api');
+  $intercept->get('/v1/download_url/:module')->to('metacpan#download_url', base => $config->{metacpan_url})->name('metacpan_download_url');
   $intercept->get('/authors/00whois' => [format => [qw(html xml)]])->to('cpan#not_implemented', base => $config->{cpan_url})->name('whois');
   $intercept->get('/authors/01mailrc.txt.gz')->to('cpan#not_implemented', base => $config->{cpan_url})->name('cpan_mailrc');
   $intercept->get('/authors/id/*filename')->to('cpan#download', base => $config->{cpan_url})->name('cpan_download');
@@ -67,27 +68,25 @@ sub api ($self) {
   my $api = $self->stash('api');
   return if $self->reply->$api($self->param('module'));
 
+  $self->stash('intercept_cb' => sub ($c, $tx) {
+    # my $package = Load($body);
+    # my ($dist, $version) = $package->{distfile} =~ m{([^/\\]+)-v?([\d._]+)\.(tar\.gz|tgz|zip)\z};
+    # $package->{distfile} = path($package->{distfile})->basename;
+    # $package->{dist} = {$dist=~s/-/::/gr => looks_like_number($version) ? 0+$version : $version};
+    # $package->{module} = $self->param('module');
+    # my ($m, $v) = each $package->{dist}->%*;
+    # warn Dump($package);
+    # return Dump($package);
+  }) if $api eq 'package';
   $self->proxy_p($self->base_url, download => sub ($msg) {
     if ($api eq 'package') {
       my $package = Load($msg->body);
       my ($dist, $version) = $package->{distfile} =~ m{([^/\\]+)-v?([\d._]+)\.(tar\.gz|tgz|zip)\z};
       $package->{distfile} = path($package->{distfile})->basename;
-      $version = '6.03_1';
       $package->{dist} = {$dist=~s/-/::/gr => looks_like_number($version) ? 0+$version : $version};
       $package->{module} = $self->param('module');
       my ($m, $v) = each $package->{dist}->%*;
-      warn Dump($package);
-
-      # my $db = $self->sql->db;
-      # eval {
-      #   my $tx = $db->begin;
-      #   $db->insert('package', {filename => $package->{distfile}, dist => $dist, module => $m, version => $v}, {on_conflict => undef});
-      #   foreach my $m (keys $package->{provides}->%*) {
-      #     my $v = $package->{provides}->{$m};
-      #     $db->insert('history', {module => $m, version => $v, filename => $package->{distfile}}, {on_conflict => undef});
-      #   }
-      #   $tx->commit;
-      # };
+      # warn Dump($package);
     }
   });
 }
@@ -107,6 +106,28 @@ sub upload ($self) {
   });
 }
 
+package Mojolicious::Plugin::ProxyPAN::Routes::Metacpan;
+use Mojo::Base 'Mojolicious::Plugin::ProxyPAN::Routes::Base', -signatures;
+
+use Mojo::Collection;
+use Mojo::Message::Response;
+
+has base => 'http://fastapi.metacpan.org';
+
+sub download_url ($self) {
+  my $module = $self->param('module');
+  my %version = (version => [{'>=' => $self->param('version')}]);
+  my $result = $self->sql->db->select('download_url_vw', ['filename', 'distribution', 'release', 'version'], {module => $module, %version})->hash;
+  if ($result) {
+    $self->log->trace(sprintf 'Found download URL for module %s: %s', $module, $result->{filename});
+    $result->{download_url} = Mojo::URL->new('http://www.cpan.org')->path(sprintf '/authors/id/%s/%s', $result->{distribution}, $result->{filename})->to_abs;
+    $self->render(json => $result);
+  }
+  else {
+    $self->proxy_p($self->base_url);
+  }
+}
+
 package Mojolicious::Plugin::ProxyPAN::Routes::Cpan;
 use Mojo::Base 'Mojolicious::Plugin::ProxyPAN::Routes::Base', -signatures;
 
@@ -122,15 +143,17 @@ sub not_implemented ($self) {
 sub download ($self) {
   my $path = Mojo::Path->new($self->param('filename'))->canonicalize;
   my $filename = $path->parts->[-1];
+  my $dist = eval { $self->sql->db->select('distributions', ['dist'], {filename => $filename})->hash->{dist} };
   $self->proxypan->paths->each(sub ($e, $num) {
     return if $self->res->code;
-    $_->list_tree->grep(sub{$_->to_rel($e)->to_string eq $path->leading_slash(0)})->first(sub {
-      $self->log->trace("Found cached file: $_");
-      $self->reply->file($_->to_abs->to_string);
-    });
+    my $file = $e->child($dist ? ($dist, $filename) : $filename);
+    return unless -e $file;
+    $self->log->trace("Found cached file: $file");
+    $self->reply->file($file->to_string);
   });
   return if $self->res->code;
-  $self->log->info(sprintf 'Distribution "%s" not found locally', $filename);
+  $self->log->info(sprintf 'File "%s" not found locally', $self->param('filename'));
+  $self->log->info(sprintf 'Not a CPAN distribution: %s', $self->param('filename')) and return $self->reply->empty(404) unless $path->parts->@* == 4;
 
   $self->proxy_p($self->base_url, download => sub ($msg) {
     $self->proxypan->save($msg->content, $filename);
@@ -141,18 +164,16 @@ sub packages ($self) {
   $self->render_later;
 
   my $base = Mojo::URL->new($ENV{CPAN_URL} || $self->stash('base') || $self->base);
-
-  my $cache = $self->proxypan->paths->first->child($self->current_path);
-  return $self->reply->packages($cache->slurp) if -e $cache;
   return $self->reply->empty(404) unless $base->to_string || $self->param('no_forward');
 
+  my $cache = $self->proxypan->paths->first->child($self->current_path);
   $self->ua->get_p($base->path($self->current_path))->then(sub ($tx) {
     die "Failed to fetch from CPAN" unless $tx->result->is_success;
     $tx->result->content->asset->move_to($cache->tap(sub{ $_->dirname->make_path }));
     $self->reply->packages($tx->result->body);
   })->catch(sub ($err) {
-    $self->app->log->error("Error proxying to CPAN: $err");
-    $self->reply->empty(500);
+    return $self->reply->packages($cache->slurp) if -e $cache;
+    return $self->reply->empty(404);
   });
 }
 

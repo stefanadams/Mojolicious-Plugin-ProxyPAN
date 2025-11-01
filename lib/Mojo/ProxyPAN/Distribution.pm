@@ -56,7 +56,7 @@ sub new {
 
 sub path ($self) {
   my $filename = Mojo::File->new($self->filename);
-  $#$filename ? $filename : Mojo::File->new(0, 0, 0, $self->dist, $self->filename);
+  $#$filename ? $filename : Mojo::File->new($self->dist, $self->filename);
 }
 
 sub to_array ($self) {

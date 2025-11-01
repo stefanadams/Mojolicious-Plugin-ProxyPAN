@@ -6,7 +6,7 @@ use Mojo::ProxyPAN::Distribution;
 use Mojo::ByteStream qw(b);
 use Mojo::Collection qw(c);
 use Mojo::File qw(path tempdir tempfile);
-use Mojo::ProxyPAN::Util qw(read_provides scan_lib merge_provides to_collection);
+use Mojo::ProxyPAN::Util qw(read_provides scan_lib merge_provides to_collection head_req);
 use Mojo::SQLite;
 use Mojo::URL;
 use Mojo::Util qw(camelize);
@@ -57,6 +57,7 @@ sub _proxy_p ($c, $base, $on=undef, $cb=undef) {
   $req->headers->host($url->host_port) if $url->host_port;
   my $source_tx = $c->ua->build_tx($method => $url => $headers->to_hash => $body);
   $source_tx->req->headers->header('X-ProxyPan' => 1);
+  $source_tx->req->headers->remove('Accept-Encoding');  # let us handle compression
   # head_req($source_tx->req);
 
   # $c->proxy->start_p($source_tx)->catch(sub ($err) {
@@ -120,7 +121,15 @@ sub _proxy_p ($c, $base, $on=undef, $cb=undef) {
   # weaken $source_tx;
   $source_tx->once(finish => sub { $promise->reject(_tx_error(@_)) });
 
-  $c->ua->start_p($source_tx)->catch(sub { });
+  $c->stash('req_cb')->($c, $source_tx) if ref $c->stash('req_cb') eq 'CODE';
+
+  $c->ua->start_p($source_tx)->then(sub ($tx) {
+    $c->stash('intercept_cb')->($c, $tx) if ref $c->stash('intercept_cb') eq 'CODE';
+  })->catch(sub { });
+
+  $source_tx->res->content->once(body => sub ($content) {
+    $c->stash('res_cb')->($c, $source_tx);
+  }) if ref $c->stash('res_cb') eq 'CODE';
 
   return $promise->catch(sub ($err) {
     $c->app->log->error(sprintf 'Error proxying to %s: %s', $source_tx->req->url->host_port || $source_tx->req->url->path, $err);
@@ -190,9 +199,9 @@ sub _proxypan_save_dist ($c, $packages, $tmpfile) {
   my $db = $c->sql->db;
   eval {
     my $tx = $db->begin;
-    $db->insert('package', {filename => $dist->path, dist => $dist->dist, module => $dist->module, version => $dist->version, package => Dump($package)}, {on_conflict => undef});
+    $db->insert('distributions', {filename => $dist->filename, dist => $dist->dist, version => $dist->version}, {on_conflict => undef});
     $packages->each(sub {
-      $db->insert('packages', {module => $_->module, version => $_->version, filename => $dist->path}, {on_conflict => undef});
+      $db->insert('provides', {module => $_->module, module_version => $_->version, filename => $dist->filename}, {on_conflict => undef});
     });
     $tx->commit;
   };
@@ -207,23 +216,26 @@ sub _reply_empty ($c, $code=204, $err='') {
 }
 
 sub _reply_history ($c, $module) {
-  my $modules = $c->proxypan->packages->grep(sub { $_->module eq $module })->sort->uniq('version')->join("\n");
-  return $c->render(data => "$modules\n") if $modules->size;
+  # my $modules = $c->proxypan->packages->grep(sub { $_->module eq $module })->sort->uniq('version')->join("\n");
+  my $history = $c->sql->db->query(q(select * from history_vw where module=? order by module_version desc), $module)->arrays->map(sub { $_->[0] })->join("\n");
+  return $c->render(data => "$history\n") if $history->size;
   $c->log->info("Module '$module' not found in local ProxyPAN history database");
   return undef;
 }
 
 sub _reply_package ($c, $module) {
-  my $package = $c->proxypan->package($module);
-  return $c->render(data => $package) if $package;
+  my $package = $c->sql->db->query(q(select * from provides_vw where filename=(select filename from provides where module=? order by module_version desc limit 1)), $module)->expand(json => 'provides')->hash;
+  $package->{module} = $package->{dist} =~ s/-/::/gr if ref $package;
+  return $c->render(data => Dump($package)) if $package;
   $c->log->info("Module '$module' not found in local ProxyPAN package database");
   return undef;
 }
 
 sub _reply_packages ($c, $bytes=undef) {
+  my $history = $c->sql->db->query(q(select history from history_vw group by filename))->arrays->map(sub { $_->[0] })->join("\n");
+  my $details = Mojo::ByteStream->new($bytes||())->gunzip->tap(sub{$$_.=$history})->split("\n")->sort->uniq->join("\n");
+  $c->render(data => $details->gzip);
   $c->res->headers->content_type('application/x-gzip');
-  my $stream = Mojo::ByteStream->new($bytes) if $bytes;
-  $c->render(data => $c->proxypan->packages->sort->uniq('module')->join("\n")->tap(sub { $stream and $_ = $_->new($stream->gunzip . $_) })->gzip);
 }
 
 sub _sql ($c, $sqlite_db) {
