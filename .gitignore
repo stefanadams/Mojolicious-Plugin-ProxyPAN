@@ -1,7 +1,10 @@
 /authors
+/blib
 /modules
 /perlbrew
 /tmp
-*.db*
+*.bak
 *.conf
+*.db*
+Makefile
 modulelist

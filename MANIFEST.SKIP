@@ -1,0 +1,10 @@
+authors
+blib
+perlbrew
+\.db$
+\.db-\w+$
+\.conf$
+tmp
+\.git
+\.bak$
+Makefile
