@@ -66,7 +66,7 @@ has base => 'http://cpanmetadb.plackperl.org';
 
 sub api ($self) {
   my $api = $self->stash('api');
-  return if $self->reply->$api($self->param('module'));
+  return if !$self->param('nolocal') && $self->reply->$api($self->param('module'));
 
   $self->stash('intercept_cb' => sub ($c, $tx) {
     # my $package = Load($body);

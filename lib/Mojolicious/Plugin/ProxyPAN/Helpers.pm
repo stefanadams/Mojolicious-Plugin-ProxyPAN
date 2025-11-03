@@ -25,6 +25,7 @@ sub register ($self, $app, $config) {
   $app->helper('proxypan.save_asset'   => \&_proxypan_save_asset);
   $app->helper('proxypan.save_content' => \&_proxypan_save_content);
   $app->helper('proxypan.save_dist'    => \&_proxypan_save_dist);
+  $app->helper('proxypan.update'       => \&_proxypan_update);
   $app->helper('proxied'               => \&_proxied);
   $app->helper('reply.empty'           => \&_reply_empty);
   $app->helper('reply.history'         => \&_reply_history);
@@ -59,18 +60,6 @@ sub _proxy_p ($c, $base, $on=undef, $cb=undef) {
   $source_tx->req->headers->header('X-ProxyPan' => 1);
   $source_tx->req->headers->remove('Accept-Encoding');  # let us handle compression
   # head_req($source_tx->req);
-
-  # $c->proxy->start_p($source_tx)->catch(sub ($err) {
-  #   $c->app->log->error(sprintf 'Error proxying to %s: %s', $source_tx->req->url->host_port || $source_tx->req->url->path, $err);
-  #   $c->reply->empty(500);
-  # });
-  # $source_tx->once(connection => sub ($source_tx, $connection) {
-  #   my $msg = $on eq 'write' ? Mojo::Message::Request->new : Mojo::Message::Response->new;
-  #   Mojo::IOLoop->stream($connection)->on($on => sub ($stream, $bytes) {
-  #     $msg->parse($bytes);
-  #     $cb->($msg) if $msg->is_finished;
-  #   });
-  # }) if $on && ref $cb eq 'CODE';
 
   $cb->($req) if ($on//'') eq 'upload' && ref $cb eq 'CODE';
 
@@ -136,6 +125,7 @@ sub _proxy_p ($c, $base, $on=undef, $cb=undef) {
     $c->reply->empty(500);
   });
 }
+
 sub _tx_error { (shift->error // {})->{message} // 'Unknown error' }
 
 sub _proxypan_paths ($c, $proxypan_paths) {
@@ -177,7 +167,7 @@ sub _proxypan_save_asset ($c, $asset, $filename) {
   my $workdir  = tempdir;
   $asset->move_to($tmpfile);
   my $ae = Archive::Extract->new(archive => $tmpfile);
-  $c->log->error("Failed to extract uploaded tarball") and return unless $ae && $ae->extract(to => $workdir);
+  $c->log->error("Failed to extract tarball") and return unless $ae && $ae->extract(to => $workdir);
   my $root = path($ae->extract_path);
   my $packages = to_collection(merge_provides(read_provides($root), scan_lib($root)), $filename);
   $c->proxypan->save_dist($packages, $tmpfile);
@@ -208,6 +198,21 @@ sub _proxypan_save_dist ($c, $packages, $tmpfile) {
   $c->log->error("Database error saving package " . $dist->module . " " . $dist->version . ": $@") if $@;
   $c->log->info(sprintf 'Saving uploaded distribution %s %s to %s', $dist->module, $dist->version, $tmpfile->move_to($move_to->tap(sub { $_->dirname->make_path }))) unless $@;
   return $dist->path;
+}
+
+sub _proxypan_update ($c) {
+  my $p = Mojo::Promise->new;
+  my $dist = $c->sql->db->query(q(select distinct dist from distributions order by dist))->arrays->map(sub { $_->[0] });
+  Mojo::Promise->map({concurrency => 3}, sub { $c->ua->get_p($c->url_for('metadb_api', {api => 'history', module => s/-/::/gr})->query(nolocal => 1)) }, @$dist)->then(sub {
+      map { ((split /\s+/, Mojo::ByteStream->new($_->[0]->result->body)->split("\n")->last)[-1]) } grep { $_->[0]->result->is_success } @_;
+  })->then(sub {
+      $c->log->info(sprintf 'Updating local ProxyPAN database for distribution %s', $_) for @_;
+      Mojo::Promise->map({concurrency => 3}, sub { $c->ua->get_p($c->url_for('cpan_download', {filename => $_->[0]})) }, map { [$_] } @_);
+  })->then(sub {
+      $c->log->info(sprintf 'Updated local ProxyPAN database for distribution %s', $_->[0]->req->url->path->parts->[-1]) for @_;
+  })->catch(sub ($err) {
+    $c->log->error(sprintf 'Error updating distribution %s: %s', $_->[0], $err);
+  });
 }
 
 sub _proxied ($c, $url) { $c->req->url->host_port eq $url->host_port or 0 }
