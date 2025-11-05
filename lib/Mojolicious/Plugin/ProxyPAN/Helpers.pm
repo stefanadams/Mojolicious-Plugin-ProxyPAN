@@ -9,7 +9,7 @@ use Mojo::File qw(path tempdir tempfile);
 use Mojo::ProxyPAN::Util qw(read_provides scan_lib merge_provides to_collection head_req);
 use Mojo::SQLite;
 use Mojo::URL;
-use Mojo::Util qw(camelize);
+use Mojo::Util qw(camelize url_unescape);
 use YAML::XS qw(Dump);
 
 has proxypan_paths => 'authors/id';
@@ -52,9 +52,9 @@ sub _proxy_p ($c, $base, $on=undef, $cb=undef) {
   my $headers = $req->headers->clone->dehop;
   my $body = $req->clone->build_body;
   my $url = $base->path->to_string ? $base : $base->clone->path_query($req->url->path_query)->fragment($req->url->fragment);
-  $c->log->info(sprintf 'Proxying from %s (%s)%s', $method, $url->base, $url->path);
+  $c->log->info(sprintf 'Proxying from %s (%s)%s', $method, $url->base, url_unescape $url->path_query);
   $url->base($base) if $base->host;
-  $c->log->info(sprintf 'Proxying to %s (%s)%s', $method, $url->base, $url->path);
+  $c->log->info(sprintf 'Proxying to %s (%s)%s', $method, $url->base, url_unescape $url->path_query);
   $headers->host($url->host_port) if $url->host_port;
   my $source_tx = $c->ua->build_tx($method => $url => $headers->to_hash => $body);
   $source_tx->req->headers->header('X-ProxyPan' => 1);
@@ -221,9 +221,9 @@ sub _reply_empty ($c, $code=204, $err='') {
   $c->log->error($err) if $err; $c->render(data => '', status => $code)
 }
 
-sub _reply_history ($c, $module) {
+sub _reply_history ($c, $module='') {
   # my $modules = $c->proxypan->packages->grep(sub { $_->module eq $module })->sort->uniq('version')->join("\n");
-  my $history = $c->sql->db->query(q(select * from history_vw where module=? order by module_version desc), $module)->arrays->map(sub { $_->[0] })->join("\n");
+  my $history = $c->sql->db->select('history_vw', undef, ($module ? {module => $module} : undef), {order_by => {-asc => ['dist', 'version', 'module_version']}})->arrays->map(sub { $_->[0] })->join("\n");
   return $c->render(data => "$history\n") if $history->size;
   $c->log->info("Module '$module' not found in local ProxyPAN history database");
   return undef;

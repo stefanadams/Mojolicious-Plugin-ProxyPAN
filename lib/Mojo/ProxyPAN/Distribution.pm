@@ -4,13 +4,15 @@ use overload
   cmp => sub {
     my ($b, $a) = @_;
     return $a->module cmp $b->module
-      || $a->version cmp $b->version
+      || version->parse($a->version) cmp version->parse($b->version)
       || $a->filename cmp $b->filename;
   },
   '""' => sub { shift->to_string },
   '@{}' => sub { shift->to_array };
 
 use Mojo::File;
+use Mojo::URL;
+use version;
 
 has 'filename' => sub { die 'filename is required' };
 has 'module' => sub { die 'module is required' };
@@ -28,6 +30,8 @@ sub dist ($self, $dist=undef, $version=undef) {
     return $self->{dist};
   }
 }
+
+sub download_url ($self, $base_url) { Mojo::URL->new($base_url)->tap(sub{$_->path->trailing_slash(1)})->path($self->path->to_string)->to_abs }
 
 sub is_main ($self) {
   return $self->module =~ s/::/-/gr eq $self->dist;
@@ -54,13 +58,24 @@ sub new {
   return $self;
 }
 
-sub path ($self) {
+sub path ($self, $parent=undef) {
   my $filename = Mojo::File->new($self->filename);
-  $#$filename ? $filename : Mojo::File->new($self->dist, $self->filename);
+  $#$filename ? $filename : Mojo::File->new($parent||(), $self->dist, $self->filename);
 }
 
 sub to_array ($self) {
   return [$self->module, $self->version, $self->path];
+}
+
+sub to_hash ($self, $base_url) {
+  return {
+    module       => $self->module,
+    version      => $self->version,
+    filename     => $self->filename,
+    dist         => $self->dist,
+    is_main      => $self->is_main,
+    download_url => $self->download_url($base_url),
+  };
 }
 
 sub to_string ($self) {

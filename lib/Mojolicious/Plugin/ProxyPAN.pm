@@ -1,6 +1,8 @@
 package Mojolicious::Plugin::ProxyPAN;
 use Mojo::Base 'Mojolicious::Plugin', -signatures;
 
+our $VERSION = '0.01';
+
 sub register ($self, $app, $config) {
   $app->plugin('Mojolicious::Plugin::ProxyPAN::Helpers');
   $app->plugin('Mojolicious::Plugin::ProxyPAN::Hooks');

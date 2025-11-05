@@ -12,6 +12,7 @@ sub register ($self, $app, $config) {
   my $intercept = $r->under('/')->requires(proxypan => 0);
   $intercept->post('/pause/authenquery')->to('pause#upload', base => $config->{pause_url}, method => $config->{pause_method})->name('pause_upload');
   $intercept->get('/v1.0/:api/:module' => [api => [qw(history package)]])->to('metadb#api', base => $config->{metadb_url})->name('metadb_api');
+  $intercept->get('/v1.0/:api' => [api => [qw(history)]])->to('metadb#api', base => $config->{metadb_url});
   $intercept->get('/v1/download_url/:module')->to('metacpan#download_url', base => $config->{metacpan_url}, cpan => $config->{cpan_url})->name('metacpan_download_url');
   $intercept->get('/authors/00whois' => [format => [qw(html xml)]])->to('cpan#not_implemented', base => $config->{cpan_url})->name('whois');
   $intercept->get('/authors/01mailrc.txt.gz')->to('cpan#not_implemented', base => $config->{cpan_url})->name('cpan_mailrc');
@@ -113,24 +114,67 @@ use Mojo::Base 'Mojolicious::Plugin::ProxyPAN::Routes::Base', -signatures;
 
 use Mojo::Collection;
 use Mojo::Message::Response;
+use Mojo::ProxyPAN::Distribution;
+use version;
 
 has base => 'http://fastapi.metacpan.org';
-has cpan => 'http://www.cpan.org';
+has cpan => 'http://www.cpan.org/authors/id';
 
 sub cpan_url ($self) { Mojo::URL->new($ENV{CPAN_URL} || $self->stash('cpan') || $self->cpan) }
 
 sub download_url ($self) {
   my $module = $self->param('module');
-  my %version = (version => [{'>=' => $self->param('version')}]);
-  my $result = $self->sql->db->select('download_url_vw', ['filename', 'distribution', 'release', 'version'], {module => $module, %version})->hash;
+  my %version = $self->_version($self->param('version'));
+  my $select = ['filename', 'distribution', 'release', 'version'];
+  my $where = {module => $module, keys %version ? (version => \%version) : ()};
+  my $result = $self->sql->db->select('download_url_vw', $select, $where)->hashes
+    ->map(sub { Mojo::ProxyPAN::Distribution->new([$module, $_->{version}, $_->{filename}]) })->sort->first;
   if ($result) {
-    $self->log->trace(sprintf 'Found download URL for module %s: %s', $module, $result->{filename});
-    $result->{download_url} = Mojo::URL->new($self->cpan_url)->path(sprintf '/authors/id/%s/%s', $result->{distribution}, $result->{filename})->to_abs;
-    $self->render(json => $result);
+    $self->log->trace(sprintf 'Found download URL for module %s: %s', $module, $result->path);
+    $self->render(json => $result->to_hash($self->cpan_url));
   }
   else {
     $self->proxy_p($self->base_url);
   }
+}
+
+sub _parse_version_expr ($expr) {
+  my @filters;
+  for my $chunk (split /,/, $expr // '') {
+    next unless $chunk =~ /\S/;
+    my ($op, $val) =
+      $chunk =~ /^\s*(==|!=|<=|>=|=|<|>)\s*([\w\.\-\+]+)\s*$/;
+    $op //= '=';  # default operator if none given
+    push @filters, [$op, $val];
+  }
+  return @filters;
+}
+
+sub _version ($self, $version) {
+  my %version;
+  my @filters = _parse_version_expr($version);
+  for my $filter (@filters) {
+    my ($op, $val) = @$filter;
+    if (!$op || $op eq '==') {
+      $version{eq} = $val;
+    }
+    elsif ($op eq '!=') {
+      $version{ne} = $val;
+    }
+    elsif ($op eq '<') {
+      $version{'<'} = $val;
+    }
+    elsif ($op eq '<=') {
+      $version{'<='} = $val;
+    }
+    elsif ($op eq '>') {
+      $version{'>'} = $val;
+    }
+    elsif ($op eq '>=') {
+      $version{'>='} = $val;
+    }
+  }
+  return %version;
 }
 
 package Mojolicious::Plugin::ProxyPAN::Routes::Cpan;

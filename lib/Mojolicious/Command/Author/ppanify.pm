@@ -1,10 +1,10 @@
-package Mojolicious::Command::Author::cpanify;
+package Mojolicious::Command::Author::ppanify;
 use Mojo::Base 'Mojolicious::Command';
 
 use Mojo::File qw(path);
 use Mojo::Util qw(getopt);
 
-has description => 'Upload distribution to CPAN';
+has description => 'Upload distribution to ProxyPAN';
 has usage       => sub { shift->extract_usage };
 
 sub run {
@@ -44,13 +44,13 @@ sub run {
 
 =head1 NAME
 
-Mojolicious::Command::Author::cpanify - CPAN-ify command
+Mojolicious::Command::Author::ppanify - ProxyPAN-ify command
 
 =head1 SYNOPSIS
 
-  Usage: APPLICATION cpanify [OPTIONS] [FILE]
+  Usage: APPLICATION ppanify [OPTIONS] [FILE]
 
-    mojo cpanify -u sri -p secr3t Mojolicious-Plugin-MyPlugin-0.01.tar.gz
+    mojo ppanify -u sri -p secr3t Mojolicious-Plugin-MyPlugin-0.01.tar.gz
 
   Options:
     -h, --help                  Show this summary of available options
@@ -60,7 +60,7 @@ Mojolicious::Command::Author::cpanify - CPAN-ify command
 
 =head1 DESCRIPTION
 
-L<Mojolicious::Command::Author::cpanify> uploads files to CPAN.
+L<Mojolicious::Command::Author::ppanify> uploads files to CPAN.
 
 This is a core command, that means it is always enabled and its code a good example for learning to build new commands,
 you're welcome to fork it.
@@ -69,31 +69,31 @@ See L<Mojolicious::Commands/"COMMANDS"> for a list of commands that are availabl
 
 =head1 ATTRIBUTES
 
-L<Mojolicious::Command::Author::cpanify> inherits all attributes from L<Mojolicious::Command> and implements the
+L<Mojolicious::Command::Author::ppanify> inherits all attributes from L<Mojolicious::Command> and implements the
 following new ones.
 
 =head2 description
 
-  my $description = $cpanify->description;
-  $cpanify        = $cpanify->description('Foo');
+  my $description = $ppanify->description;
+  $ppanify        = $ppanify->description('Foo');
 
 Short description of this command, used for the command list.
 
 =head2 usage
 
-  my $usage = $cpanify->usage;
-  $cpanify  = $cpanify->usage('Foo');
+  my $usage = $ppanify->usage;
+  $ppanify  = $ppanify->usage('Foo');
 
 Usage information for this command, used for the help screen.
 
 =head1 METHODS
 
-L<Mojolicious::Command::Author::cpanify> inherits all methods from L<Mojolicious::Command> and implements the following
+L<Mojolicious::Command::Author::ppanify> inherits all methods from L<Mojolicious::Command> and implements the following
 new ones.
 
 =head2 run
 
-  $cpanify->run(@ARGV);
+  $ppanify->run(@ARGV);
 
 Run this command.
 

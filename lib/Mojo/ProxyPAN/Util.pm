@@ -6,8 +6,9 @@ use Exporter qw(import);
 use File::Find ();
 use Module::Metadata;      # parses package + version from .pm
 use Mojo::Collection;
-use Mojo::ProxyPAN::Distribution;
 use Mojo::File qw(path tempdir);
+use Mojo::Util qw(url_unescape);
+use Mojo::ProxyPAN::Distribution;
 
 our @EXPORT_OK = qw(read_provides scan_lib merge_provides to_collection head_req);
 
@@ -95,6 +96,6 @@ sub to_collection ($merged, $filename) {
   return $dists;
 }
 
-sub head_req ($req) { warn sprintf "%s (%s)%s\n%s\n", $req->method, $req->url->base, $req->url->path, $req->headers->to_string }
+sub head_req ($req) { warn sprintf "%s (%s)%s\n%s\n", $req->method, $req->url->base, url_unescape($req->url->path_query), $req->headers->to_string }
 
 1;
