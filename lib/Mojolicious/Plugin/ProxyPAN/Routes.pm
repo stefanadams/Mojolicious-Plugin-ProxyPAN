@@ -23,7 +23,7 @@ sub register ($self, $app, $config) {
   $intercept->get('/modules/03modlist.data.gz')->to('cpan#not_implemented', base => $config->{cpan_url})->name('cpan_modlist');
   $intercept->get('/modules/06perms.txt.gz')->to('cpan#not_implemented', base => $config->{cpan_url})->name('cpan_perms');
 
-  $r->any('/*whatever')->to('mock#whatever')->name('whatever');
+  $r->any('/*whatever')->to('mock#whatever')->name('whatever') if $config->{mock};
 }
 
 sub _proxypan ($route, $c, $captures, $bool) {
@@ -202,7 +202,7 @@ sub download ($self) {
   });
   return if $self->res->code;
   $self->log->info(sprintf 'File "%s" not found locally', $self->param('filename'));
-  $self->log->info(sprintf 'Not a CPAN distribution: %s', $self->param('filename')) and return $self->reply->empty(404) unless $path->parts->@* == 4;
+  $self->log->info(sprintf 'Not a CPAN distribution: %s', $filename) and return $self->reply->empty(404) unless $path->parts->@* == 4;
 
   $self->proxy_p($self->base_url, download => sub ($msg) {
     $self->proxypan->save($msg->content, $filename);

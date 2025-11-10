@@ -4,13 +4,13 @@ use Mojo::Base 'Mojolicious::Plugin', -signatures;
 our $VERSION = '0.01';
 
 sub register ($self, $app, $config) {
-  $app->plugin('Mojolicious::Plugin::ProxyPAN::Helpers');
-  $app->plugin('Mojolicious::Plugin::ProxyPAN::Hooks');
+  $app->plugin('Mojolicious::Plugin::ProxyPAN::Helpers' => $config);
+  $app->plugin('Mojolicious::Plugin::ProxyPAN::Hooks' => $config);
   $app->plugin('Mojolicious::Plugin::ProxyPAN::Routes' => $config);
   $app->sql->migrations->from_data('Mojolicious::Plugin::ProxyPAN')->migrate;
-  $app->ua->on(prepare => sub ($ua, $tx) {
-    $tx->req->url->scheme('http') if $tx->req->url->scheme && $tx->req->url->scheme eq 'https';
-  });
+  # $app->ua->on(prepare => sub ($ua, $tx) {
+  #   $tx->req->url->scheme('http') if $tx->req->url->scheme && $tx->req->url->scheme eq 'https';
+  # });
 }
 
 1;
